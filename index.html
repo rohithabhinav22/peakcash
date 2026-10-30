@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<meta name="robots" content="noindex">
+<title>PeakCash Live</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-180.png">
+<meta name="theme-color" content="#0f1115">
+<style>
+  :root { --bg:#0f1115; --card:#181b21; --text:#e8eaee; --muted:#9097a3; --accent:#3b82f6; }
+  body { margin:0; min-height:100vh; display:grid; place-items:center; background:var(--bg); color:var(--text);
+         font:16px/1.5 system-ui, "Segoe UI", sans-serif; padding:0 16px; box-sizing:border-box; }
+  main { max-width:360px; text-align:center; }
+  h1 { font-size:20px; margin:16px 0 6px; }
+  p { color:var(--muted); margin:0 0 18px; }
+  .spin { width:34px; height:34px; margin:0 auto; border:3px solid #2a2f38; border-top-color:var(--accent);
+          border-radius:50%; animation:s 0.9s linear infinite; }
+  @keyframes s { to { transform:rotate(360deg); } }
+  button { background:var(--accent); color:#fff; border:0; border-radius:10px; padding:12px 22px; font:inherit; }
+  [hidden] { display:none !important; }
+</style>
+</head>
+<body>
+<main>
+  <div class="spin" id="spin"></div>
+  <h1 id="title">Connecting to your laptop…</h1>
+  <p id="msg">Finding the current PeakCash link.</p>
+  <button id="retry" hidden>Try again</button>
+</main>
+<script>
+// Fixed launcher for PeakCash Live. The laptop's tunnel address changes on every restart; the laptop's
+// watchdog publishes the current link on a private ntfy topic, and this page looks it up and opens it.
+// The topic is never in this page's code: it arrives once in the #fragment (never sent to any server)
+// from the laptop's setup page and is kept in this phone's browser storage.
+const $ = id => document.getElementById(id);
+let retryTimer;
+
+function topic() {
+  const fromHash = decodeURIComponent(location.hash.slice(1));
+  try {
+    if (fromHash) { localStorage.setItem("pc_topic", fromHash); history.replaceState(null, "", location.pathname); }
+    return fromHash || localStorage.getItem("pc_topic") || "";
+  } catch (e) { return fromHash; }
+}
+
+function show(title, msg, canRetry) {
+  $("spin").hidden = canRetry; $("title").textContent = title; $("msg").textContent = msg; $("retry").hidden = !canRetry;
+}
+
+async function withTimeout(url, ms) {
+  const ctl = new AbortController(); const t = setTimeout(() => ctl.abort(), ms);
+  try { return await fetch(url, { cache: "no-store", signal: ctl.signal }); } finally { clearTimeout(t); }
+}
+
+async function go() {
+  clearTimeout(retryTimer);
+  const t = topic();
+  if (!t) return show("Set up needed", "Open this launcher once from the QR code on your laptop's setup page.", false);
+  show("Connecting to your laptop…", "Finding the current PeakCash link.", false);
+  let link = "";
+  try {
+    const r = await withTimeout(`https://ntfy.sh/${encodeURIComponent(t)}-link/json?poll=1&since=all`, 15000);
+    for (const line of (await r.text()).split("\n")) {
+      try { const m = JSON.parse(line); if (m.event === "message" && m.message.startsWith("https://")) link = m.message; } catch (e) {}
+    }
+  } catch (e) {
+    return show("No internet", "Couldn't reach the link service. Check your connection.", true);
+  }
+  if (!link) return show("No link yet", "Your laptop hasn't published a link in the last 12 hours. Is it on?", true);
+  try {
+    const p = await withTimeout(new URL(link).origin + "/m/ping", 10000);
+    if (!p.ok) throw new Error(p.status);
+  } catch (e) {
+    retryTimer = setTimeout(go, 20000);
+    return show("Laptop offline", "The laptop or its tunnel is restarting or off. Retrying every 20 seconds.", true);
+  }
+  location.replace(link);
+}
+
+$("retry").onclick = go;
+window.addEventListener("pageshow", go);   // also re-runs when coming back to the app
+if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
+</script>
+</body>
+</html>
